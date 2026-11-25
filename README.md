@@ -3,8 +3,6 @@ A small gimp plugin to easily remove the background of an image with [LDF](https
 
 ## Made for GIMP 3.0 on Windows and Linux
 
-Fork from the Linux only version [GIMP-Background-Remover ](https://github.com/manu12121999/GIMP-Background-Remover).
-
 ## Platform-specific Python Setup
 The plugin creates a local virtual environment (`gimpenv`) and runs model inference through it. On Windows, GIMP's bundled Python is not suitable for installing standard PyPI wheels, so the installer requires a separate 64-bit Python 3.12 installation. On Linux, the installer uses the Python interpreter running GIMP.
 
