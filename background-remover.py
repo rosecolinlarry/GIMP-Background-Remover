@@ -5,7 +5,7 @@ import tempfile
 import importlib
 
 
-# This Plugin is only for GIMP Version >= 3.0.0 and Windows
+# This plugin is for GIMP Version >= 3.0.0 on Windows and Linux.
 import gi
 gi.require_version('Gimp', '3.0')
 from gi.repository import Gimp
@@ -22,9 +22,20 @@ for version in range(6,20):
 sys.path.extend([baseLoc+'gimpenv/Lib', baseLoc+'gimpenv/Lib/site-packages', baseLoc+'gimpenv/Lib/site-packages/setuptools'])
 
 
+def run_subprocess(args, **kwargs):
+    import subprocess
+
+    if os.name == "nt":
+        startupinfo = subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        startupinfo.wShowWindow = subprocess.SW_HIDE
+        kwargs.setdefault("startupinfo", startupinfo)
+        kwargs.setdefault("creationflags", subprocess.CREATE_NO_WINDOW)
+    return subprocess.run(args, **kwargs)
+
+
 def find_windows_python312():
     import shutil
-    import subprocess
     import winreg
 
     candidates = []
@@ -61,7 +72,7 @@ def find_windows_python312():
             continue
         checked.add(os.path.normcase(candidate))
         try:
-            result = subprocess.run(
+            result = run_subprocess(
                 [candidate, "-c", "import struct, sys; print(sys.version_info[0], sys.version_info[1], struct.calcsize('P') * 8)"],
                 capture_output=True,
                 text=True,
@@ -135,53 +146,65 @@ class BackgroundRemover(Gimp.PlugIn):
         
         base_path = os.path.dirname(os.path.realpath(__file__))
         venv_dir = base_path +'/'+ "gimpenv"
-        base_python = find_windows_python312()
-        if not base_python:
-            return procedure.new_return_values(
-                Gimp.PDBStatusType.CALLING_ERROR,
-                GLib.Error("Could not find 64-bit Python 3.12. Install it from python.org, then rerun the installer.")
-            )
-        python_exe = os.path.join(venv_dir, "Scripts", "python.exe")
+        is_windows = os.name == "nt"
+        if is_windows:
+            base_python = find_windows_python312()
+            if not base_python:
+                return procedure.new_return_values(
+                    Gimp.PDBStatusType.CALLING_ERROR,
+                    GLib.Error("Could not find 64-bit Python 3.12. Install it from python.org, then rerun the installer.")
+                )
+            python_exe = os.path.join(venv_dir, "Scripts", "python.exe")
+        else:
+            base_python = sys.executable
+            python_exe = os.path.join(venv_dir, "bin", "python")
         model_path = os.path.join(base_path, "Ldf", "model-40")
-        powershell_exe = os.path.join(
-            os.environ.get("SystemRoot", r"C:\Windows"),
-            "System32", "WindowsPowerShell", "v1.0", "powershell.exe"
-        )
-        trusted_hosts = [
+        install_options = ["--only-binary=:all:"] if is_windows else []
+        trusted_hosts = ([
             "--trusted-host", "pypi.org",
             "--trusted-host", "pypi.python.org",
             "--trusted-host", "files.pythonhosted.org",
             "--trusted-host", "download.pytorch.org",
-        ]
+        ] if is_windows else [])
         
         try:
-            download_env = os.environ.copy()
-            download_env["LDF_MODEL_URL"] = "https://huggingface.co/ManuelVogel12/LDF_weights/resolve/main/model-40"
-            download_env["LDF_MODEL_OUTPUT"] = model_path
-            subprocess.run(
-                [powershell_exe, "-NoProfile", "-NonInteractive", "-Command",
-                 "$ProgressPreference = 'SilentlyContinue'; Invoke-WebRequest -Uri $env:LDF_MODEL_URL -OutFile $env:LDF_MODEL_OUTPUT"],
-                check=True,
-                capture_output=True,
-                text=True,
-                env=download_env,
-            )
+            if is_windows:
+                powershell_exe = os.path.join(
+                    os.environ.get("SystemRoot", r"C:\Windows"),
+                    "System32", "WindowsPowerShell", "v1.0", "powershell.exe"
+                )
+                download_env = os.environ.copy()
+                download_env["LDF_MODEL_URL"] = "https://huggingface.co/ManuelVogel12/LDF_weights/resolve/main/model-40"
+                download_env["LDF_MODEL_OUTPUT"] = model_path
+                run_subprocess(
+                    [powershell_exe, "-NoProfile", "-NonInteractive", "-Command",
+                     "$ProgressPreference = 'SilentlyContinue'; Invoke-WebRequest -Uri $env:LDF_MODEL_URL -OutFile $env:LDF_MODEL_OUTPUT"],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    env=download_env,
+                )
+            else:
+                run_subprocess([
+                    "curl", "-L", "-o", model_path,
+                    "https://huggingface.co/ManuelVogel12/LDF_weights/resolve/main/model-40"
+                ], check=True, capture_output=True, text=True)
 
-            subprocess.run([base_python, "-m", "venv", "--clear", venv_dir],
+            run_subprocess([base_python, "-m", "venv", "--clear", venv_dir],
                 check=True,
                 capture_output=True,
                 text=True
             )
             
             # config.set_property("progress_bar", 10.0)
-            subprocess.run([python_exe, "-m", "pip", "install", "--upgrade", "pip", *trusted_hosts],
+            run_subprocess([python_exe, "-m", "pip", "install", "--upgrade", "pip", *trusted_hosts],
             check=True,
             capture_output=True,
             text=True
         )
             # config.set_property("progress_bar", 15.0)
-            subprocess.run([
-                python_exe, "-m", "pip", "install", "--only-binary=:all:", *trusted_hosts,
+            run_subprocess([
+                python_exe, "-m", "pip", "install", *install_options, *trusted_hosts,
                 "numpy", "pillow", "opencv-python",
             ],
             check=True,
@@ -189,8 +212,8 @@ class BackgroundRemover(Gimp.PlugIn):
             text=True
         )
             # config.set_property("progress_bar", 75.0)
-            subprocess.run([
-                python_exe, "-m", "pip", "install", "--only-binary=:all:", *trusted_hosts,
+            run_subprocess([
+                python_exe, "-m", "pip", "install", *install_options, *trusted_hosts,
                 "torch", "--index-url", "https://download.pytorch.org/whl/cpu", "--force-reinstall"
             ],
             check=True,
@@ -204,7 +227,7 @@ class BackgroundRemover(Gimp.PlugIn):
         except FileNotFoundError as e:
             return procedure.new_return_values(
                 Gimp.PDBStatusType.CALLING_ERROR,
-                GLib.Error(f"Could not start Windows PowerShell: {e}. Verify PowerShell is available, then rerun the installer.")
+                GLib.Error(f"Could not start a required installer command: {e}. Verify the platform prerequisites are installed, then rerun the installer.")
             )
         return procedure.new_return_values(Gimp.PDBStatusType.SUCCESS, None)
     
@@ -221,13 +244,15 @@ class BackgroundRemover(Gimp.PlugIn):
         # Create Input for LDF
         Gimp.file_save(Gimp.RunMode.NONINTERACTIVE, image, file1, None)
 
-        # Inference via external Windows Python 3.12
+        # Run inference in the platform-specific virtual environment.
         plugin_dir = os.path.dirname(os.path.abspath(__file__))
         runner_script = os.path.join(plugin_dir, "run_ldf.py")
-        python_exe = os.path.join(plugin_dir, "gimpenv", "Scripts", "python.exe")
+        python_dir = "Scripts" if os.name == "nt" else "bin"
+        python_name = "python.exe" if os.name == "nt" else "python"
+        python_exe = os.path.join(plugin_dir, "gimpenv", python_dir, python_name)
 
         try:
-            subprocess.run(
+            run_subprocess(
                 [python_exe, runner_script],
                 cwd=plugin_dir,
                 check=True,
@@ -245,7 +270,7 @@ class BackgroundRemover(Gimp.PlugIn):
             image.undo_group_end()
             return procedure.new_return_values(
                 Gimp.PDBStatusType.CALLING_ERROR,
-                GLib.Error("Could not find gimpenv\\Scripts\\python.exe or run_ldf.py. Run the installer and verify Python 3.12 is installed.")
+                GLib.Error("Could not find the virtual-environment Python or run_ldf.py. Run the installer and verify Python is installed.")
             )
 
         # Output
